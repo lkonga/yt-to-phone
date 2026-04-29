@@ -2,11 +2,12 @@
 # yt2phone — download YouTube URL(s) as MP3 and sync to phone
 #
 # Primary sync: Syncthing (drop into watched folder)
-# Fallback sync: SSH/rsync (set PHONE_SSH below)
+# Fallback sync: SSH/rsync (set PHONE_SSH env var)
 #
 # Usage:
 #   yt2phone <url> [url2 ...]
-#   yt2phone --ssh <url> [url2 ...]   # force SSH sync
+#   yt2phone --ssh <url> [url2 ...]     # force SSH sync
+#   yt2phone --dry-run <url> [url2 ...] # show what would happen, no download
 
 set -euo pipefail
 
@@ -17,29 +18,36 @@ PHONE_SSH="${PHONE_SSH:-}"
 PHONE_SSH_PATH="${PHONE_SSH_PATH:-/sdcard/Music}"
 # ─────────────────────────────────────────────────────────────────────────────
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${GREEN}[yt2phone]${NC} $*"; }
 warn()  { echo -e "${YELLOW}[yt2phone]${NC} $*"; }
 error() { echo -e "${RED}[yt2phone]${NC} $*" >&2; }
+dry()   { echo -e "${CYAN}[dry-run]${NC} $*"; }
 
 usage() {
-  echo "Usage: yt2phone [--ssh] <youtube-url> [url2 ...]"
-  echo "  --ssh   Force SSH/rsync transfer instead of Syncthing drop"
+  echo "Usage: yt2phone [--ssh] [--dry-run] <youtube-url> [url2 ...]"
+  echo ""
+  echo "Flags:"
+  echo "  --ssh       Force SSH/rsync transfer instead of Syncthing drop"
+  echo "  --dry-run   Show what would happen without downloading anything"
+  echo "  --help      Show this help"
   echo ""
   echo "Env vars:"
   echo "  MUSIC_DIR      Local Syncthing music folder (default: $MUSIC_DIR)"
   echo "  PHONE_SSH      SSH target e.g. user@192.168.1.x"
   echo "  PHONE_SSH_PATH Remote music path (default: $PHONE_SSH_PATH)"
-  exit 1
+  exit 0
 }
 
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 FORCE_SSH=0
+DRY_RUN=0
 URLS=()
 for arg in "$@"; do
   case "$arg" in
-    --ssh) FORCE_SSH=1 ;;
-    --help|-h) usage ;;
+    --ssh)      FORCE_SSH=1 ;;
+    --dry-run)  DRY_RUN=1 ;;
+    --help|-h)  usage ;;
     *) URLS+=("$arg") ;;
   esac
 done
@@ -50,6 +58,24 @@ done
 for cmd in yt-dlp ffmpeg; do
   command -v "$cmd" &>/dev/null || { error "Missing dependency: $cmd"; exit 1; }
 done
+
+# ── Dry run ───────────────────────────────────────────────────────────────────
+if [[ $DRY_RUN -eq 1 ]]; then
+  dry "Would download ${#URLS[@]} URL(s) as MP3 (best quality, embedded thumbnail + metadata)"
+  for url in "${URLS[@]}"; do
+    dry "  URL: $url"
+    # Fetch title without downloading
+    title="$(yt-dlp --no-playlist --print "%(artist)s - %(title)s" "$url" 2>/dev/null || echo "(could not resolve title)")"
+    dry "  Title: $title"
+  done
+  if [[ $FORCE_SSH -eq 1 ]]; then
+    dry "Sync method: SSH → ${PHONE_SSH:-<PHONE_SSH not set>}:${PHONE_SSH_PATH}"
+  else
+    dry "Sync method: Syncthing → $MUSIC_DIR"
+  fi
+  dry "No files downloaded. Remove --dry-run to execute."
+  exit 0
+fi
 
 # ── Download ──────────────────────────────────────────────────────────────────
 TMPDIR="$(mktemp -d)"
@@ -74,20 +100,19 @@ if [[ ${#DOWNLOADED[@]} -eq 0 || ! -f "${DOWNLOADED[0]}" ]]; then
 fi
 
 info "Downloaded: ${#DOWNLOADED[@]} file(s)"
+for f in "${DOWNLOADED[@]}"; do info "  $(basename "$f")"; done
 
 # ── Sync ──────────────────────────────────────────────────────────────────────
-if [[ $FORCE_SSH -eq 1 || ( -z "$(ls -A "$MUSIC_DIR" 2>/dev/null || true)" && -n "$PHONE_SSH" ) ]]; then
-  # SSH path
+if [[ $FORCE_SSH -eq 1 ]]; then
   if [[ -z "$PHONE_SSH" ]]; then
     error "SSH sync requested but PHONE_SSH is not set."
-    error "Set it: export PHONE_SSH=user@<phone-ip>"
+    error "  export PHONE_SSH=user@<phone-ip>"
     exit 1
   fi
   info "Syncing via SSH to ${PHONE_SSH}:${PHONE_SSH_PATH} ..."
   rsync -av --progress "${DOWNLOADED[@]}" "${PHONE_SSH}:${PHONE_SSH_PATH}/"
   info "Done — files sent via SSH."
 else
-  # Syncthing path — just copy into watched folder
   mkdir -p "$MUSIC_DIR"
   for f in "${DOWNLOADED[@]}"; do
     dest="$MUSIC_DIR/$(basename "$f")"
