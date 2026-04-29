@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MUSIC_DIR="${MUSIC_DIR:-/home/lkonga/Syncthing/Music}"
+MUSIC_DIR="${MUSIC_DIR:-$HOME/Syncthing/Music}"
 # SSH fallback: user@host or user@ip  (leave empty to disable)
 PHONE_SSH="${PHONE_SSH:-}"
 PHONE_SSH_PATH="${PHONE_SSH_PATH:-/sdcard/Music}"
