@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# yt2phone — download YouTube URL(s) as MP3 and sync to phone
+#
+# Primary sync: Syncthing (drop into watched folder)
+# Fallback sync: SSH/rsync (set PHONE_SSH below)
+#
+# Usage:
+#   yt2phone <url> [url2 ...]
+#   yt2phone --ssh <url> [url2 ...]   # force SSH sync
+
+set -euo pipefail
+
+# ── Config ────────────────────────────────────────────────────────────────────
+MUSIC_DIR="${MUSIC_DIR:-/home/lkonga/Syncthing/Music}"
+# SSH fallback: user@host or user@ip  (leave empty to disable)
+PHONE_SSH="${PHONE_SSH:-}"
+PHONE_SSH_PATH="${PHONE_SSH_PATH:-/sdcard/Music}"
+# ─────────────────────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+info()  { echo -e "${GREEN}[yt2phone]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[yt2phone]${NC} $*"; }
+error() { echo -e "${RED}[yt2phone]${NC} $*" >&2; }
+
+usage() {
+  echo "Usage: yt2phone [--ssh] <youtube-url> [url2 ...]"
+  echo "  --ssh   Force SSH/rsync transfer instead of Syncthing drop"
+  echo ""
+  echo "Env vars:"
+  echo "  MUSIC_DIR      Local Syncthing music folder (default: $MUSIC_DIR)"
+  echo "  PHONE_SSH      SSH target e.g. user@192.168.1.x"
+  echo "  PHONE_SSH_PATH Remote music path (default: $PHONE_SSH_PATH)"
+  exit 1
+}
+
+# ── Arg parsing ───────────────────────────────────────────────────────────────
+FORCE_SSH=0
+URLS=()
+for arg in "$@"; do
+  case "$arg" in
+    --ssh) FORCE_SSH=1 ;;
+    --help|-h) usage ;;
+    *) URLS+=("$arg") ;;
+  esac
+done
+
+[[ ${#URLS[@]} -eq 0 ]] && usage
+
+# ── Dependency check ──────────────────────────────────────────────────────────
+for cmd in yt-dlp ffmpeg; do
+  command -v "$cmd" &>/dev/null || { error "Missing dependency: $cmd"; exit 1; }
+done
+
+# ── Download ──────────────────────────────────────────────────────────────────
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+info "Downloading ${#URLS[@]} URL(s) as MP3..."
+
+yt-dlp \
+  --extract-audio \
+  --audio-format mp3 \
+  --audio-quality 0 \
+  --embed-thumbnail \
+  --add-metadata \
+  --output "$TMPDIR/%(artist)s - %(title)s.%(ext)s" \
+  --no-playlist \
+  "${URLS[@]}"
+
+DOWNLOADED=("$TMPDIR"/*.mp3)
+if [[ ${#DOWNLOADED[@]} -eq 0 || ! -f "${DOWNLOADED[0]}" ]]; then
+  error "No MP3 files produced."
+  exit 1
+fi
+
+info "Downloaded: ${#DOWNLOADED[@]} file(s)"
+
+# ── Sync ──────────────────────────────────────────────────────────────────────
+if [[ $FORCE_SSH -eq 1 || ( -z "$(ls -A "$MUSIC_DIR" 2>/dev/null || true)" && -n "$PHONE_SSH" ) ]]; then
+  # SSH path
+  if [[ -z "$PHONE_SSH" ]]; then
+    error "SSH sync requested but PHONE_SSH is not set."
+    error "Set it: export PHONE_SSH=user@<phone-ip>"
+    exit 1
+  fi
+  info "Syncing via SSH to ${PHONE_SSH}:${PHONE_SSH_PATH} ..."
+  rsync -av --progress "${DOWNLOADED[@]}" "${PHONE_SSH}:${PHONE_SSH_PATH}/"
+  info "Done — files sent via SSH."
+else
+  # Syncthing path — just copy into watched folder
+  mkdir -p "$MUSIC_DIR"
+  for f in "${DOWNLOADED[@]}"; do
+    dest="$MUSIC_DIR/$(basename "$f")"
+    cp "$f" "$dest"
+    info "Copied: $(basename "$f")"
+  done
+  info "Done — Syncthing will push to phone automatically."
+fi

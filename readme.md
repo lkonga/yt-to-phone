@@ -1,0 +1,1 @@
+i want simple script which hooks yt-dlp so i can run and it will sync it to phone via syncthing, but alternatively id like to have always ssh access activated in the phone as tailscale requires a vpn and sometimes might use vpn in phone
